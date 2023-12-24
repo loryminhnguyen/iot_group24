@@ -1,4 +1,4 @@
-#include <ArduinoWebsockets.h>
+cpp#include <ArduinoWebsockets.h>
 #include "esp_http_server.h"
 #include "esp_timer.h"
 #include "esp_camera.h"
@@ -8,61 +8,32 @@
 #include "fr_forward.h"
 #include "fr_flash.h"
 
-const char* ssid = "ĐTQM";
+const char* ssid = "DTQM";
 const char* password = "66668888";
 
-#define ENROLL_CONFIRM_TIMES 5
-#define FACE_ID_SAVE_NUMBER 7
-
-// Select camera model
-//#define CAMERA_MODEL_WROVER_KIT
-//#define CAMERA_MODEL_ESP_EYE
-//#define CAMERA_MODEL_M5STACK_PSRAM
-//#define CAMERA_MODEL_M5STACK_WIDE
 #define CAMERA_MODEL_AI_THINKER
 #include "camera_pins.h"
 
 using namespace websockets;
 WebsocketsServer socket_server;
 
-camera_fb_t * fb = NULL;
-
-long current_millis;
-long last_detected_millis = 0;
-
-#define relay_pin 4 // pin 12 can also be used
-unsigned long door_opened_millis = 0;
-long interval = 5000;           // open lock for ... milliseconds
-bool face_recognised = false;
-
-void app_facenet_main();
-void app_httpserver_init();
-
-typedef struct
-{
-  uint8_t *image;
-  box_array_t *net_boxes;
-  dl_matrix3d_t *face_id;
-} http_img_process_result;
-
-
 static inline mtmn_config_t app_mtmn_config()
 {
-  mtmn_config_t mtmn_config = {0};
-  mtmn_config.type = FAST;
-  mtmn_config.min_face = 80;
-  mtmn_config.pyramid = 0.707;
-  mtmn_config.pyramid_times = 4;
-  mtmn_config.p_threshold.score = 0.6;
-  mtmn_config.p_threshold.nms = 0.7;
-  mtmn_config.p_threshold.candidate_number = 20;
-  mtmn_config.r_threshold.score = 0.7;
-  mtmn_config.r_threshold.nms = 0.7;
-  mtmn_config.r_threshold.candidate_number = 10;
-  mtmn_config.o_threshold.score = 0.7;
-  mtmn_config.o_threshold.nms = 0.7;
-  mtmn_config.o_threshold.candidate_number = 1;
-  return mtmn_config;
+   mtmn_config_t mtmn_config = {0};
+   mtmn_config.type = FAST;
+   mtmn_config.min_face = 80;
+   mtmn_config.pyramid = 0.707;
+   mtmn_config.pyramid_times = 4;
+   mtmn_config.p_threshold.score = 0.6;
+   mtmn_config.p_threshold.nms = 0.7;
+   mtmn_config.p_threshold.candidate_number = 20;
+   mtmn_config.r_threshold.score = 0.7;
+   mtmn_config.r_threshold.nms = 0.7;
+   mtmn_config.r_threshold.candidate_number = 10;
+   mtmn_config.o_threshold.score = 0.7;
+   mtmn_config.o_threshold.nms = 0.7;
+   mtmn_config.o_threshold.candidate_number = 1;
+   return mtmn_config;
 }
 mtmn_config_t mtmn_config = app_mtmn_config();
 
@@ -70,25 +41,6 @@ face_id_name_list st_face_list;
 static dl_matrix3du_t *aligned_face = NULL;
 
 httpd_handle_t camera_httpd = NULL;
-
-typedef enum
-{
-  START_STREAM,
-  START_DETECT,
-  SHOW_FACES,
-  START_RECOGNITION,
-  START_ENROLL,
-  ENROLL_COMPLETE,
-  DELETE_ALL,
-} en_fsm_state;
-en_fsm_state g_state;
-
-typedef struct
-{
-  char enroll_name[ENROLL_NAME_LEN];
-} httpd_resp_value;
-
-httpd_resp_value st_name;
 
 void setup() {
   Serial.begin(115200);
@@ -167,198 +119,164 @@ void setup() {
   Serial.println("' to connect");
 }
 
-static esp_err_t index_handler(httpd_req_t *req) {
-  httpd_resp_set_type(req, "text/html");
-  httpd_resp_set_hdr(req, "Content-Encoding", "gzip");
-  return httpd_resp_send(req, (const char *)index_ov2640_html_gz, index_ov2640_html_gz_len);
-}
-
-httpd_uri_t index_uri = {
-  .uri       = "/",
-  .method    = HTTP_GET,
-  .handler   = index_handler,
-  .user_ctx  = NULL
-};
-
-void app_httpserver_init ()
-{
-  httpd_config_t config = HTTPD_DEFAULT_CONFIG();
-  if (httpd_start(&camera_httpd, &config) == ESP_OK)
-    Serial.println("httpd_start");
-  {
-    httpd_register_uri_handler(camera_httpd, &index_uri);
-  }
-}
-
-void app_facenet_main()
-{
-  face_id_name_init(&st_face_list, FACE_ID_SAVE_NUMBER, ENROLL_CONFIRM_TIMES);
-  aligned_face = dl_matrix3du_alloc(1, FACE_WIDTH, FACE_HEIGHT, 3);
-  read_face_id_from_flash_with_name(&st_face_list);
-}
-
-static inline int do_enrollment(face_id_name_list *face_list, dl_matrix3d_t *new_id)
-{
-  ESP_LOGD(TAG, "START ENROLLING");
-  int left_sample_face = enroll_face_id_to_flash_with_name(face_list, new_id, st_name.enroll_name);
-  ESP_LOGD(TAG, "Face ID %s Enrollment: Sample %d",
-           st_name.enroll_name,
-           ENROLL_CONFIRM_TIMES - left_sample_face);
-  return left_sample_face;
-}
-
-static esp_err_t send_face_list(WebsocketsClient &client)
-{
-  client.send("delete_faces"); // tell browser to delete all faces
-  face_id_node *head = st_face_list.head;
-  char add_face[64];
-  for (int i = 0; i < st_face_list.count; i++) // loop current faces
-  {
-    sprintf(add_face, "listface:%s", head->id_name);
-    client.send(add_face); //send face to browser
-    head = head->next;
-  }
-}
-
-static esp_err_t delete_all_faces(WebsocketsClient &client)
-{
-  delete_face_all_in_flash_with_name(&st_face_list);
-  client.send("delete_faces");
-}
-
-void handle_message(WebsocketsClient &client, WebsocketsMessage msg)
-{
-  if (msg.data() == "stream") {
-    g_state = START_STREAM;
-    client.send("STREAMING");
-  }
-  if (msg.data() == "detect") {
-    g_state = START_DETECT;
-    client.send("DETECTING");
-  }
-  if (msg.data().substring(0, 8) == "capture:") {
-    g_state = START_ENROLL;
-    char person[FACE_ID_SAVE_NUMBER * ENROLL_NAME_LEN] = {0,};
-    msg.data().substring(8).toCharArray(person, sizeof(person));
-    memcpy(st_name.enroll_name, person, strlen(person) + 1);
-    client.send("CAPTURING");
-  }
-  if (msg.data() == "recognise") {
-    g_state = START_RECOGNITION;
-    client.send("RECOGNISING");
-  }
-  if (msg.data().substring(0, 7) == "remove:") {
-    char person[ENROLL_NAME_LEN * FACE_ID_SAVE_NUMBER];
-    msg.data().substring(7).toCharArray(person, sizeof(person));
-    delete_face_id_in_flash_with_name(&st_face_list, person);
-    send_face_list(client); // reset faces in the browser
-  }
-  if (msg.data() == "delete_all") {
-    delete_all_faces(client);
-  }
-}
-
-void open_door(WebsocketsClient &client) {
-  if (digitalRead(relay_pin) == LOW) {
-    digitalWrite(relay_pin, HIGH); //close (energise) relay so door unlocks
-    Serial.println("Door Unlocked");
-    client.send("door_open");
-    door_opened_millis = millis(); // time relay closed and door opened
-  }
-}
-
 void loop() {
-  auto client = socket_server.accept();
-  client.onMessage(handle_message);
-  dl_matrix3du_t *image_matrix = dl_matrix3du_alloc(1, 320, 240, 3);
-  http_img_process_result out_res = {0};
-  out_res.image = image_matrix->item;
+  // Your code here
+}
 
-  send_face_list(client);
-  client.send("STREAMING");
+void app_httpserver_init() {
+  httpd_config_t config = HTTPD_DEFAULT_CONFIG();
+  config.server_port = 80;
 
-  while (client.available()) {
-    client.poll();
-
-    if (millis() - interval > door_opened_millis) { // current time - face recognised time > 5 secs
-      digitalWrite(relay_pin, LOW); //open relay
-    }
-
-    fb = esp_camera_fb_get();
-
-    if (g_state == START_DETECT || g_state == START_ENROLL || g_state == START_RECOGNITION)
-    {
-      out_res.net_boxes = NULL;
-      out_res.face_id = NULL;
-
-      fmt2rgb888(fb->buf, fb->len, fb->format, out_res.image);
-
-      out_res.net_boxes = face_detect(image_matrix, &mtmn_config);
-
-      if (out_res.net_boxes)
-      {
-        if (align_face(out_res.net_boxes, image_matrix, aligned_face) == ESP_OK)
-        {
-
-          out_res.face_id = get_face_id(aligned_face);
-          last_detected_millis = millis();
-          if (g_state == START_DETECT) {
-            client.send("FACE DETECTED");
-          }
-
-          if (g_state == START_ENROLL)
-          {
-            int left_sample_face = do_enrollment(&st_face_list, out_res.face_id);
-            char enrolling_message[64];
-            sprintf(enrolling_message, "SAMPLE NUMBER %d FOR %s", ENROLL_CONFIRM_TIMES - left_sample_face, st_name.enroll_name);
-            client.send(enrolling_message);
-            if (left_sample_face == 0)
-            {
-              ESP_LOGI(TAG, "Enrolled Face ID: %s", st_face_list.tail->id_name);
-              g_state = START_STREAM;
-              char captured_message[64];
-              sprintf(captured_message, "FACE CAPTURED FOR %s", st_face_list.tail->id_name);
-              client.send(captured_message);
-              send_face_list(client);
-
-            }
-          }
-
-          if (g_state == START_RECOGNITION  && (st_face_list.count > 0))
-          {
-            face_id_node *f = recognize_face_with_name(&st_face_list, out_res.face_id);
-            if (f)
-            {
-              char recognised_message[64];
-              sprintf(recognised_message, "DOOR OPEN FOR %s", f->id_name);
-              open_door(client);
-              client.send(recognised_message);
-            }
-            else
-            {
-              client.send("FACE NOT RECOGNISED");
-            }
-          }
-          dl_matrix3d_free(out_res.face_id);
-        }
-
-      }
-      else
-      {
-        if (g_state != START_DETECT) {
-          client.send("NO FACE DETECTED");
-        }
-      }
-
-      if (g_state == START_DETECT && millis() - last_detected_millis > 500) { // Detecting but no face detected
-        client.send("DETECTING");
-      }
-
-    }
-
-    client.sendBinary((const char *)fb->buf, fb->len);
-
-    esp_camera_fb_return(fb);
-    fb = NULL;
+  if (httpd_start(&camera_httpd, &config) == ESP_OK) {
+    httpd_register_uri_handler(camera_httpd, &index_uri);
+    httpd_register_uri_handler(camera_httpd, &capture_uri);
+    httpd_register_uri_handler(camera_httpd, &stream_uri);
+    httpd_register_uri_handler(camera_httpd, &face_uri);
+    httpd_register_uri_handler(camera_httpd, &door_uri);
   }
+}
+
+void app_facenet_main() {
+  face_id_name_list_init(&st_face_list);
+  fr_flash_init(&st_face_list);
+  fr_flash_load(&st_face_list);
+}
+
+void app_facenet_deinit() {
+  fr_flash_save(&st_face_list);
+  face_id_name_list_deinit(&st_face_list);
+}
+
+esp_err_t index_handler(httpd_req_t *req) {
+  httpd_resp_set_type(req, "text/html");
+  httpd_resp_send(req, (const char *)index_html_gz, index_html_gz_len);
+  return ESP_OK;
+}
+
+esp_err_t capture_handler(httpd_req_t *req) {
+  camera_fb_t * fb = NULL;
+  esp_err_t res = ESP_OK;
+  fb = esp_camera_fb_get();
+  if (!fb) {
+    Serial.println("Camera capture failed");
+    httpd_resp_send_500(req);
+    return ESP_FAIL;
+  }
+  httpd_resp_set_type(req, "image/jpeg");
+  httpd_resp_set_hdr(req, "Content-Disposition", "inline; filename=capture.jpg");
+  httpd_resp_set_hdr(req, "Access-Control-Allow-Origin", "*");
+  httpd_resp_set_hdr(req, "Access-Control-Allow-Methods", "GET");
+  httpd_resp_set_hdr(req, "Access-Control-Allow-Headers", "Content-Type");
+  res = httpd_resp_send(req, (const char *)fb->buf, fb->len);
+  esp_camera_fb_return(fb);
+  return res;
+}
+
+esp_err_t stream_handler(httpd_req_t *req) {
+  camera_fb_t * fb = NULL;
+  esp_err_t res = ESP_OK;
+  size_t _jpg_buf_len = 0;
+  uint8_t * _jpg_buf = NULL;
+  char * part_buf[64];
+  dl_matrix3du_t *image_matrix = NULL;
+  bool detected = false;
+  int face_id = 0;
+  int64_t fr_start = esp_timer_get_time();
+  fb = esp_camera_fb_get();
+  if (!fb) {
+    Serial.println("Camera capture failed");
+    httpd_resp_send_500(req);
+    return ESP_FAIL;
+  }
+  detected = detect_face(&mtmn_config, fb->buf, fb->width, fb->height, &face_id, part_buf);
+  if (detected) {
+    image_matrix = dl_matrix3du_alloc(1, fb->width, fb->height, 3);
+    if (!image_matrix) {
+      Serial.println("dl_matrix3du_alloc failed");
+      httpd_resp_send_500(req);
+      return ESP_FAIL;
+    }
+    fmt2rgb888(fb->buf, fb->len, fb->format, image_matrix->item);
+    if (align_face(&mtmn_config, image_matrix, aligned_face) == ESP_OK) {
+      fr_forward(&st_face_list, aligned_face, &face_id);
+    }
+    dl_matrix3du_free(image_matrix);
+  }
+  _jpg_buf_len = fb->len;
+  _jpg_buf = fb->buf;
+  res = httpd_resp_set_type(req, "image/jpeg");
+  if (res == ESP_OK) {
+    res = httpd_resp_set_hdr(req, "Content-Disposition", "inline; filename=stream.jpg");
+  }
+  if (res == ESP_OK) {
+    res = httpd_resp_set_hdr(req, "Access-Control-Allow-Origin", "*");
+  }
+  if (res == ESP_OK) {
+    res = httpd_resp_set_hdr(req, "Access-Control-Allow-Methods", "GET");
+  }
+  if (res == ESP_OK) {
+    res = httpd_resp_set_hdr(req, "Access-Control-Allow-Headers", "Content-Type");
+  }
+  if (res == ESP_OK) {
+    res = httpd_resp_send(req, (const char *)_jpg_buf, _jpg_buf_len);
+  }
+  esp_camera_fb_return(fb);
+  int64_t fr_end = esp_timer_get_time();
+  Serial.printf("Face Recognition Time: %lldms\n", (fr_end - fr_start) / 1000);
+  return res;
+}
+
+esp_err_t face_handler(httpd_req_t *req) {
+  char *buf;
+  size_t buf_len;
+  char variable[32] = {0,};
+  char value[32] = {0,};
+  buf_len = httpd_req_get_url_query_len(req) + 1;
+  if (buf_len > 1) {
+    buf = (char *)malloc(buf_len);
+    if (httpd_req_get_url_query_str(req, buf, buf_len) == ESP_OK) {
+      if (httpd_query_key_value(buf, "var", variable, sizeof(variable)) == ESP_OK &&
+          httpd_query_key_value(buf, "val", value, sizeof(value)) == ESP_OK) {
+        if (strcmp(variable, "name") == 0) {
+          strncpy(st_face_list.id_name_list[st_face_list.num].name, value, sizeof(st_face_list.id_name_list[st_face_list.num].name));
+          Serial.printf("Set name: %s\n", st_face_list.id_name_list[st_face_list.num].name);
+        } else if (strcmp(variable, "id") == 0) {
+          st_face_list.id_name_list[st_face_list.num].id = atoi(value);
+          Serial.printf("Set id: %d\n", st_face_list.id_name_list[st_face_list.num].id);
+        }
+      }
+    }
+    free(buf);
+  }
+  httpd_resp_set_type(req, "text/html");
+  httpd_resp_send(req, (const char *)face_html_gz, face_html_gz_len);
+  return ESP_OK;
+}
+
+esp_err_t door_handler(httpd_req_t *req) {
+  char *buf;
+  size_t buf_len;
+  char variable[32] = {0,};
+  char value[32] = {0,};
+  buf_len = httpd_req_get_url_query_len(req) + 1;
+  if (buf_len > 1) {
+    buf = (char *)malloc(buf_len);
+    if (httpd_req_get_url_query_str(req, buf, buf_len) == ESP_OK) {
+      if (httpd_query_key_value(buf, "var", variable, sizeof(variable)) == ESP_OK &&
+          httpd_query_key_value(buf, "val", value, sizeof(value)) == ESP_OK) {
+        if (strcmp(variable, "action") == 0) {
+          if (strcmp(value, "open") == 0) {
+            digitalWrite(relay_pin, HIGH);
+            delay(1000);
+            digitalWrite(relay_pin, LOW);
+            Serial.println("Door opened");
+          }
+        }
+      }
+    }
+    free(buf);
+  }
+  httpd_resp_set_type(req, "text/html");
+  httpd_resp_send(req, (const char *)door_html_gz, door_html_gz_len);
+  return ESP_OK;
 }
