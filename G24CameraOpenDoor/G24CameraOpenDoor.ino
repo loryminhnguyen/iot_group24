@@ -120,7 +120,22 @@ void setup() {
 }
 
 void loop() {
-  // Your code here
+  socket_server.listen(82);
+  WebsocketsClient client = socket_server.accept();
+  if (client.available()) {
+    WebsocketsMessage msg = client.receive();
+    if (msg.is_text()) {
+      String command = msg.data();
+      if (command == "stream_handler") {
+        stream_handler();
+      } else if (command == "face_handler") {
+        face_handler();
+      } else if (command == "door_handler") {
+        door_handler();
+      }
+    }
+  }
+  client.disconnect();
 }
 
 void app_httpserver_init() {
